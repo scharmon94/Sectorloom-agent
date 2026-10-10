@@ -1,0 +1,172 @@
+# Builds the Windows installer on a real Windows machine, so nobody
+# needs one. Runs on every push to main, and publishes a GitHub Release
+# whenever a v* tag is pushed.
+#
+#   git tag v1.0.0 && git push origin v1.0.0
+#
+# The result is SectorLoomSetup.exe. It is not code-signed, so Windows
+# shows a SmartScreen warning the first time anyone runs it; the site's
+# FAQ explains that in plain language.
+#
+# There is deliberately no pull_request trigger. Nothing should build
+# this installer except a push to a branch you control.
+
+name: Build the Windows agent
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+# Read-only for everything by default. Only the release job below is
+# given permission to write, and only when a tag is being released. A
+# build job that can write to the repository is a build job that can
+# rewrite the thing it is building.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Work out a version number
+        id: ver
+        shell: bash
+        run: |
+          # a tag gives the real version; anything else gets a build number
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="${GITHUB_REF#refs/tags/v}"
+          else
+            v="0.0.$GITHUB_RUN_NUMBER"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building $v"
+
+      - name: Install what the agent needs
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller==6.11.1"
+          # the whole dependency tree, in the log, for every build — so a
+          # version that changed under you is findable afterwards
+          pip list
+
+      - name: Check the agent still runs
+        run: |
+          python -c "import sectorloom_agent.app, sectorloom_agent.ibt, sectorloom_agent.gui"
+          python tests/test_end_to_end.py
+
+      - name: Build SectorLoomAgent.exe
+        run: >
+          pyinstaller --noconfirm --onefile --noconsole
+          --name SectorLoomAgent
+          --icon installer/sectorloom.ico
+          --collect-all duckdb
+          --collect-all numpy
+          --hidden-import pystray._win32
+          --hidden-import PIL._tkinter_finder
+          run_agent.py
+
+      - name: Install NSIS
+        # Chocolatey ships with the runner image, so this does not depend
+        # on NSIS happening to be preinstalled in whatever image is current.
+        run: choco install nsis --no-progress -y
+
+      - name: Build the installer
+        shell: cmd
+        run: >
+          "C:\Program Files (x86)\NSIS\makensis.exe"
+          /DVERSION=${{ steps.ver.outputs.version }}
+          /DAGENT_EXE=..\dist\SectorLoomAgent.exe
+          /DOUTFILE=..\dist\SectorLoomSetup.exe
+          installer\sectorloom.nsi
+
+      - name: Prove the installer actually installs
+        shell: pwsh
+        run: |
+          # /S is NSIS's silent switch. A silent run exercises the whole
+          # install path without a human clicking Next, so a broken
+          # script fails the build instead of failing on someone's PC.
+          Start-Process -FilePath dist\SectorLoomSetup.exe -ArgumentList '/S' -Wait
+          $dir = "$env:LOCALAPPDATA\Programs\SectorLoom"
+          $exe = "$dir\SectorLoomAgent.exe"
+          if (-not (Test-Path $exe)) { throw "the agent was not installed at $exe" }
+
+          $run = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
+                                  -Name 'SectorLoomTelemetryAgent' -ErrorAction Stop
+          Write-Host "start with windows: $($run.SectorLoomTelemetryAgent)"
+
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\SectorLoomAgent'
+          $un = Get-ItemProperty -Path $key -ErrorAction Stop
+          Write-Host "add/remove entry:   $($un.DisplayName) $($un.DisplayVersion)"
+
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\SectorLoom Agent.lnk")) {
+            throw "no Start Menu shortcut"
+          }
+
+          # and that it uninstalls cleanly again
+          Start-Process -FilePath "$dir\Uninstall.exe" -ArgumentList '/S' -Wait
+          Start-Sleep -Seconds 3
+          if (Test-Path $exe) { throw "the agent survived its own uninstaller" }
+          if (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
+                               -Name 'SectorLoomTelemetryAgent' -ErrorAction SilentlyContinue) {
+            throw "uninstalling left the start-with-Windows entry behind"
+          }
+          Write-Host "install and uninstall both clean"
+
+      - name: Record what the files hash to
+        shell: pwsh
+        run: |
+          # Printed in the build log and shipped beside the installer.
+          # Without a signature this is the only way anybody can check
+          # that the file they downloaded is the file you built.
+          Get-ChildItem dist\*.exe | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            $line = "$h  $($_.Name)"
+            Write-Host $line
+            Add-Content -Path dist\SHA256SUMS.txt -Value $line
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SectorLoomSetup-${{ steps.ver.outputs.version }}
+          path: |
+            dist/SectorLoomSetup.exe
+            dist/SectorLoomAgent.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+  # A separate job, so that writing to the repository is something only
+  # a tagged release can do and the build itself never can.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: SectorLoomSetup-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/SectorLoomSetup.exe
+            dist/SectorLoomAgent.exe
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
