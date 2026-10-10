@@ -43,5 +43,16 @@ def build_unknown(path):
     print(f"wrote {path}: deliberately unrecognisable")
 
 if __name__ == '__main__':
-    build(sys.argv[1] if len(sys.argv) > 1 else 'lmu.duckdb')
-    build_unknown('/tmp/claude-0/unknown.duckdb')
+    # The second file — the deliberately unreadable one, for exercising
+    # the schema prober — used to be written to a hard-coded scratch
+    # path that exists on one Linux box and nowhere else. On Windows
+    # that directory is absent, duckdb raises, and this script exits
+    # non-zero, which takes the whole end-to-end suite down with it.
+    # It now lands beside the real file, and only when asked for.
+    args = [a for a in sys.argv[1:] if not a.startswith('-')]
+    out = args[0] if args else 'lmu.duckdb'
+    build(out)
+    if '--with-unknown' in sys.argv:
+        beside = os.path.dirname(os.path.abspath(out)) or '.'
+        build_unknown(os.path.join(beside, 'unknown.duckdb'))
+        
