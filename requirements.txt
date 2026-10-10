@@ -1,0 +1,5 @@
+# Everything the agent needs. Install with:  py -3 -m pip install -r requirements.txt
+numpy>=1.24          # channel maths
+duckdb>=1.0          # reading Le Mans Ultimate telemetry
+pystray>=0.19        # the system tray icon
+pillow>=10.0         # draws the tray icon (pystray needs it)
