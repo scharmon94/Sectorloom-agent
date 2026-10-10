@@ -171,5 +171,4 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
             dist/SHA256SUMS.txt
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+      
