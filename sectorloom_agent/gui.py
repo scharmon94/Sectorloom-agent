@@ -67,18 +67,20 @@ class AgentWindow:
         ttk.Label(account, text="These are the same details you use to sign in to the website.",
                   wraplength=600, foreground="#555").grid(row=0, column=0, columnspan=3, sticky="w", **PAD)
 
-        self.v_url = tk.StringVar(value=self.cfg.get("url", ""))
-        self.v_key = tk.StringVar(value=self.cfg.get("key", ""))
+        # Only the site address is typed. Everything the agent needs to
+        # reach the database is published in that site's config.js and is
+        # read from there — a driver has no reason to know what Supabase
+        # is, let alone go and find a key.
+        self.v_site = tk.StringVar(value=self.cfg.get("site") or "https://sectorloom.com")
         self.v_email = tk.StringVar(value=self.cfg.get("email", ""))
         self.v_pass = tk.StringVar()
 
         rows = [
-            ("Site address", self.v_url, False,
-             "The address of your SectorLoom site, or your Supabase project URL"),
-            ("Public key", self.v_key, False,
-             "The same publishable / anon key that is in your site's config.js"),
+            ("Site address", self.v_site, False,
+             "Leave this as it is unless you were given a different address"),
             ("Email", self.v_email, False, ""),
-            ("Password", self.v_pass, True, ""),
+            ("Password", self.v_pass, True,
+             "Used once to sign in. Only a session token is kept, never this."),
         ]
         for i, (label, var, secret, hint) in enumerate(rows, start=1):
             ttk.Label(account, text=label).grid(row=i * 2 - 1, column=0, sticky="w", **PAD)
@@ -156,7 +158,7 @@ class AgentWindow:
             var.set(chosen)
 
     def _open_site(self) -> None:
-        url = self.v_url.get().strip()
+        url = self.v_site.get().strip()
         if url:
             webbrowser.open(url if url.startswith("http") else "https://" + url)
 
@@ -173,8 +175,12 @@ class AgentWindow:
         messagebox.showinfo("SectorLoom", "Saved." if ok else f"Saved, but: {msg}", parent=self.root)
 
     def _sign_in(self) -> None:
-        self.cfg["url"] = self.v_url.get().strip()
-        self.cfg["key"] = self.v_key.get().strip()
+        site = self.v_site.get().strip()
+        if site != (self.cfg.get("site") or ""):
+            # a different site means a different project; drop what was
+            # cached for the old one rather than signing in against it
+            self.cfg["url"] = self.cfg["key"] = ""
+        self.cfg["site"] = site
         self.cfg["email"] = self.v_email.get().strip()
         self.set_status("Signing in…", "#555")
         password = self.v_pass.get()
@@ -237,4 +243,5 @@ class AgentWindow:
         try:
             self.nb.select(self.tab_activity)
         except Exception:
+            pass
             pass
