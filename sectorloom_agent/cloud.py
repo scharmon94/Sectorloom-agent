@@ -20,6 +20,11 @@ from typing import Any, Dict, List, Optional
 
 TIMEOUT = 60
 BUCKET = "telemetry"
+# urllib announces itself as "Python-urllib/3.x", which Cloudflare's bot
+# protection blocks outright — that is a 403 on config.js while a browser
+# loads the same file perfectly. Say who we actually are instead.
+USER_AGENT = "SectorLoomAgent/1.0 (+https://sectorloom.com)"
+DEFAULT_SITE = "https://sectorloom.com"
 
 
 class CloudError(Exception):
@@ -33,6 +38,7 @@ class AuthExpired(CloudError):
 def _request(method: str, url: str, headers: Dict[str, str],
              body: Optional[bytes] = None) -> Any:
     req = urllib.request.Request(url, data=body, method=method)
+    req.add_header("User-Agent", USER_AGENT)
     for k, v in headers.items():
         req.add_header(k, v)
     try:
@@ -245,11 +251,19 @@ def discover(site: str) -> Dict[str, str]:
 
     try:
         req = urllib.request.Request(target, method="GET")
+        req.add_header("User-Agent", USER_AGENT)
         req.add_header("Accept", "application/javascript, text/plain, */*")
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read(512 * 1024)
             ctype = (resp.headers.get("Content-Type") or "").lower()
     except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise CloudError(
+                f"{target} refused the agent ({e.code}). The site is up — a "
+                "browser can read that file — so something in front of it is "
+                "turning away anything that is not a browser. In Cloudflare, "
+                "look at Security -> Bots (Bot Fight Mode) and Security -> "
+                "WAF, and allow /config.js through.")
         raise CloudError(f"{target} answered {e.code}. Check the site address.")
     except Exception as e:
         raise CloudError(f"Could not reach {target} ({e}). Check the address "
@@ -335,7 +349,7 @@ def config_file() -> str:
 
 
 DEFAULTS: Dict[str, Any] = {
-    "site": "https://sectorloom.com",   # what the driver types
+    "site": DEFAULT_SITE,               # no longer typed; see discover()
     "url": "",                          # both of these are read from the
     "key": "",                          # site's config.js, never typed
     "email": "",

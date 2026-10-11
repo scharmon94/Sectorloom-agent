@@ -67,17 +67,15 @@ class AgentWindow:
         ttk.Label(account, text="These are the same details you use to sign in to the website.",
                   wraplength=600, foreground="#555").grid(row=0, column=0, columnspan=3, sticky="w", **PAD)
 
-        # Only the site address is typed. Everything the agent needs to
-        # reach the database is published in that site's config.js and is
-        # read from there — a driver has no reason to know what Supabase
-        # is, let alone go and find a key.
-        self.v_site = tk.StringVar(value=self.cfg.get("site") or "https://sectorloom.com")
+        # Email and password, and nothing else. Where to connect and how
+        # is read from the site's own config.js at sign-in, so there is
+        # nothing here a driver could get wrong. The site address is
+        # still a setting in agent.json for anyone self-hosting, it just
+        # has no reason to be on screen.
         self.v_email = tk.StringVar(value=self.cfg.get("email", ""))
         self.v_pass = tk.StringVar()
 
         rows = [
-            ("Site address", self.v_site, False,
-             "Leave this as it is unless you were given a different address"),
             ("Email", self.v_email, False, ""),
             ("Password", self.v_pass, True,
              "Used once to sign in. Only a session token is kept, never this."),
@@ -158,7 +156,7 @@ class AgentWindow:
             var.set(chosen)
 
     def _open_site(self) -> None:
-        url = self.v_site.get().strip()
+        url = (self.cfg.get("site") or "https://sectorloom.com").strip()
         if url:
             webbrowser.open(url if url.startswith("http") else "https://" + url)
 
@@ -175,12 +173,8 @@ class AgentWindow:
         messagebox.showinfo("SectorLoom", "Saved." if ok else f"Saved, but: {msg}", parent=self.root)
 
     def _sign_in(self) -> None:
-        site = self.v_site.get().strip()
-        if site != (self.cfg.get("site") or ""):
-            # a different site means a different project; drop what was
-            # cached for the old one rather than signing in against it
-            self.cfg["url"] = self.cfg["key"] = ""
-        self.cfg["site"] = site
+        if not (self.cfg.get("site") or "").strip():
+            self.cfg["site"] = "https://sectorloom.com"
         self.cfg["email"] = self.v_email.get().strip()
         self.set_status("Signing in…", "#555")
         password = self.v_pass.get()

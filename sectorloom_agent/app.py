@@ -20,8 +20,8 @@ import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from .cloud import (AuthExpired, Cloud, CloudError, discover, load_config,
-                     save_config)
+from .cloud import (DEFAULT_SITE, AuthExpired, Cloud, CloudError, discover,
+                     load_config, save_config)
 from .watcher import Watcher, default_dirs
 
 APP_NAME = "SectorLoom Telemetry Agent"
@@ -81,10 +81,17 @@ class Agent:
         key = (self.cfg.get("key") or "").strip()
         if url and key and not force:
             return
-        site = (self.cfg.get("site") or "").strip()
-        if not site:
-            raise CloudError("Type the address of your SectorLoom site first.")
-        found = discover(site)
+        site = (self.cfg.get("site") or "").strip() or DEFAULT_SITE
+        try:
+            found = discover(site)
+        except CloudError:
+            # The site address is no longer something anybody types, so a
+            # stored one that has gone stale would strand this account
+            # with no way to correct it. Fall back to the real site once.
+            if site == DEFAULT_SITE:
+                raise
+            self.log(f"{site} did not answer; trying {DEFAULT_SITE}")
+            found = discover(DEFAULT_SITE)
         if found["url"] != url or found["key"] != key:
             self.log(f"Read the connection settings from {found['site']}/config.js")
         self.cfg["url"], self.cfg["key"] = found["url"], found["key"]
