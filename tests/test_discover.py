@@ -131,8 +131,10 @@ class Serve(BaseHTTPRequestHandler):
     body = TODAY
     ctype = "application/javascript"
     code = 200
+    seen_agent = None
 
     def do_GET(self):
+        Serve.seen_agent = self.headers.get("User-Agent")
         if self.path != "/config.js":
             self.send_response(404); self.end_headers(); self.wfile.write(b"no"); return
         payload = Serve.body.encode()
@@ -165,12 +167,23 @@ check("works with a trailing slash", discover(site + "/")["url"], URL)
 check("works if they paste the page address",
       discover(site + "/index.html")["url"], URL)
 
+# The agent used to go out as "Python-urllib/3.x", which Cloudflare's bot
+# protection turns away with a 403 — a browser could read config.js and
+# the agent could not. It has to say who it is.
+say_agent = Serve.seen_agent or ""
+check("does not identify as urllib", "urllib" in say_agent.lower(), False)
+check("identifies itself", say_agent.startswith("SectorLoomAgent/"), True)
+
 print("\n9. what the driver is told when it does not work")
 check_raises("nothing typed", lambda: discover(""), "type the address")
 check_raises("no such site", lambda: discover("http://127.0.0.1:1/"), "could not reach")
 
 Serve.code = 404
 check_raises("site has no config.js", lambda: discover(site), "answered 404")
+
+Serve.code = 403
+check_raises("turned away by bot protection", lambda: discover(site), "refused the agent")
+check_raises("and says where to look", lambda: discover(site), "cloudflare")
 
 Serve.code = 200
 Serve.ctype = "text/html"

@@ -214,17 +214,36 @@ def main():
     check("found the project url", json.load(open(fresh))["url"], url)
     check("found the key", json.load(open(fresh))["key"], "sb_publishable_test")
 
-    # and a bad site address says so rather than blaming the password
+    # and a bad site address says so rather than blaming the password.
+    # The real sectorloom.com is deliberately kept out of this: the agent
+    # falls back to it when a stored address fails, and a test that
+    # depends on the live site would pass here and behave differently on
+    # a build runner that can actually reach it.
     json.dump({"site": "http://127.0.0.1:1", "email": "x@example.com"}, open(fresh, "w"))
     for mod in [m for m in list(sys.modules) if m.startswith("sectorloom_agent")]:
         del sys.modules[mod]
-    from sectorloom_agent.app import Agent as Agent5
+    import sectorloom_agent.cloud as cloud5
+    import sectorloom_agent.app as app5
+    cloud5.DEFAULT_SITE = app5.DEFAULT_SITE = "http://127.0.0.1:2"
     from sectorloom_agent.cloud import CloudError as CE
     try:
-        Agent5().connect(password="whatever")
+        app5.Agent().connect(password="whatever")
         check("unreachable site explained", "no error", "an error")
     except CE as e:
         check_true("unreachable site explained", "could not reach" in str(e).lower())
+
+    # a stored address that has gone stale falls back to the real one
+    json.dump({"site": "http://127.0.0.1:1", "email": fake_supabase.STATE["email"],
+               "watch_iracing": False, "watch_lmu": False}, open(fresh, "w"))
+    for mod in [m for m in list(sys.modules) if m.startswith("sectorloom_agent")]:
+        del sys.modules[mod]
+    import sectorloom_agent.cloud as cloud6
+    import sectorloom_agent.app as app6
+    cloud6.DEFAULT_SITE = app6.DEFAULT_SITE = site
+    recovered = app6.Agent()
+    recovered.connect(password=fake_supabase.STATE["password"])
+    check_true("a stale site address recovers on its own",
+               recovered.cloud and recovered.cloud.uid)
     site_srv.shutdown()
 
     server.shutdown()
