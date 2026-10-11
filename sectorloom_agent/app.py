@@ -20,7 +20,8 @@ import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from .cloud import AuthExpired, Cloud, CloudError, load_config, save_config
+from .cloud import (AuthExpired, Cloud, CloudError, discover, load_config,
+                     save_config)
 from .watcher import Watcher, default_dirs
 
 APP_NAME = "SectorLoom Telemetry Agent"
@@ -67,15 +68,47 @@ class Agent:
                 pass
 
     # ---- account --------------------------------------------------------
+    def resolve_project(self, force: bool = False) -> None:
+        """Work out which Supabase project to talk to, from the site address.
+
+        Drivers should not have to know what Supabase is, so the two
+        values are read from the site's own config.js rather than typed.
+        They are cached, so a later start does not depend on the site
+        being up; `force` re-reads them, which is what to do when a
+        sign-in is refused because the key has changed.
+        """
+        url = (self.cfg.get("url") or "").strip()
+        key = (self.cfg.get("key") or "").strip()
+        if url and key and not force:
+            return
+        site = (self.cfg.get("site") or "").strip()
+        if not site:
+            raise CloudError("Type the address of your SectorLoom site first.")
+        found = discover(site)
+        if found["url"] != url or found["key"] != key:
+            self.log(f"Read the connection settings from {found['site']}/config.js")
+        self.cfg["url"], self.cfg["key"] = found["url"], found["key"]
+        self.cfg["site"] = found["site"]
+        save_config(self.cfg)
+
     def connect(self, password: Optional[str] = None) -> None:
         """Sign in, with the stored refresh token unless a password is given."""
+        self.resolve_project()
         url = (self.cfg.get("url") or "").strip()
         key = (self.cfg.get("key") or "").strip()
         if not url or not key:
-            raise CloudError("Fill in the site address and public key first.")
+            raise CloudError("Could not work out which project to connect to.")
         cloud = Cloud(url, key)
         if password:
-            cloud.sign_in(self.cfg.get("email", ""), password)
+            try:
+                cloud.sign_in(self.cfg.get("email", ""), password)
+            except CloudError:
+                # the project may have been moved or its key rotated; the
+                # site always knows the current answer, so ask it once
+                # before telling the driver their password is wrong
+                self.resolve_project(force=True)
+                cloud = Cloud(self.cfg["url"], self.cfg["key"])
+                cloud.sign_in(self.cfg.get("email", ""), password)
         else:
             token = self.cfg.get("refresh_token")
             if not token:
