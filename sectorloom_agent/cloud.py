@@ -152,6 +152,129 @@ class Cloud:
                  json.dumps(row).encode())
 
 
+# --------------------------------------------------------------------------
+#  Finding the project settings from the site itself
+#
+#  A driver should not have to know what Supabase is. The site already
+#  publishes the two values the agent needs, in config.js, which is public
+#  by design — the anon key is meant to sit in every visitor's browser.
+#  So the agent asks for the site address and reads the rest from there.
+#
+#  config.js is a file Shawn edits by hand and will keep adding to (Stripe
+#  links, support address, and whatever comes next), so the parsing here
+#  has one rule: find the two keys it needs and be completely indifferent
+#  to everything else in the file.
+# --------------------------------------------------------------------------
+def _strip_js_comments(src: str) -> str:
+    """Blank out /* */ and // comments, leaving string literals alone.
+
+    Needed because config.js is mostly comments explaining each setting,
+    and a commented-out example assignment would otherwise be read as the
+    real one. Characters are replaced with spaces rather than deleted so
+    that nothing shifts position.
+    """
+    out = list(src)
+    i, n = 0, len(src)
+    quote = None
+    while i < n:
+        c = src[i]
+        if quote:
+            if c == "\\":
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            i += 1
+            continue
+        if c in "\"'`":
+            quote = c
+            i += 1
+            continue
+        if c == "/" and i + 1 < n:
+            if src[i + 1] == "/":
+                while i < n and src[i] != "\n":
+                    out[i] = " "
+                    i += 1
+                continue
+            if src[i + 1] == "*":
+                end = src.find("*/", i + 2)
+                end = n if end < 0 else end + 2
+                for j in range(i, end):
+                    if out[j] != "\n":
+                        out[j] = " "
+                i = end
+                continue
+        i += 1
+    return "".join(out)
+
+
+_PLACEHOLDERS = ("", "YOUR_SUPABASE_URL", "YOUR_ANON_KEY", "PASTE_", "xxxxx",
+                 "https://xxxxx.supabase.co", "your-project")
+
+
+def _find_setting(src: str, name: str) -> str:
+    """Pull one "NAME": "value" out of a config.js, whatever else is in it."""
+    import re
+    pattern = re.compile(
+        r"""['"]?\b%s\b['"]?\s*:\s*(['"])(.*?)\1""" % re.escape(name),
+        re.DOTALL)
+    found = [m.group(2).strip() for m in pattern.finditer(src)]
+    found = [v for v in found if v and not any(
+        p and p.lower() in v.lower() for p in _PLACEHOLDERS if p)]
+    return found[-1] if found else ""
+
+
+def discover(site: str) -> Dict[str, str]:
+    """Read SUPABASE_URL and SUPABASE_ANON_KEY out of a site's config.js.
+
+    Raises CloudError with something the person can act on. Never raises
+    anything else, so a caller can offer the manual boxes instead.
+    """
+    s = (site or "").strip().strip('"').strip("'")
+    if not s:
+        raise CloudError("Type the address of your SectorLoom site first.")
+    if not s.startswith(("http://", "https://")):
+        s = "https://" + s
+    parts = urllib.parse.urlsplit(s)
+    if not parts.netloc:
+        raise CloudError("That is not a valid web address.")
+    # tolerate someone pasting the full page address, or the config itself
+    path = parts.path.rsplit("/", 1)[0] if "." in parts.path.rsplit("/", 1)[-1] else parts.path
+    base = f"{parts.scheme}://{parts.netloc}{path}".rstrip("/")
+    target = base + "/config.js"
+
+    try:
+        req = urllib.request.Request(target, method="GET")
+        req.add_header("Accept", "application/javascript, text/plain, */*")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read(512 * 1024)
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+    except urllib.error.HTTPError as e:
+        raise CloudError(f"{target} answered {e.code}. Check the site address.")
+    except Exception as e:
+        raise CloudError(f"Could not reach {target} ({e}). Check the address "
+                         "and your connection.")
+
+    text = raw.decode("utf-8", "replace")
+    if "html" in ctype or text.lstrip()[:15].lower().startswith("<!doctype"):
+        raise CloudError(f"{target} gave back a web page rather than the "
+                         "settings file. The site may not have config.js on it.")
+
+    clean = _strip_js_comments(text)
+    url = _find_setting(clean, "SUPABASE_URL")
+    key = (_find_setting(clean, "SUPABASE_ANON_KEY")
+           or _find_setting(clean, "SUPABASE_KEY"))
+    if not url or not key:
+        missing = " and ".join(
+            n for n, v in (("the project URL", url), ("the public key", key)) if not v)
+        raise CloudError(f"Found {target} but could not read {missing} from it.")
+    # Deliberately no "must contain supabase" check here: a self-hosted
+    # Supabase is a legitimate thing to point at. _clean_url still catches
+    # the common mistake of giving the dashboard address, and a wrong
+    # project announces itself clearly at sign-in anyway.
+    return {"url": _clean_url(url), "key": key, "site": base}
+
+
 def _clean_url(raw: str) -> str:
     """Tolerate a trailing slash or a stray /rest/v1, same as the web app."""
     u = (raw or "").strip().strip('"').strip("'")
@@ -160,8 +283,10 @@ def _clean_url(raw: str) -> str:
     if not u.startswith(("http://", "https://")):
         u = "https://" + u
     parts = urllib.parse.urlsplit(u)
-    if not parts.netloc:
-        raise CloudError("That project URL is not a valid web address.")
+    # urlsplit is happy to call "not a url at all" a host, so check that
+    # what came back could actually be one
+    if not parts.netloc or any(ch.isspace() for ch in parts.netloc):
+        raise CloudError(f"That project URL is not a valid web address: {raw}")
     if parts.netloc.lower().endswith("supabase.com"):
         raise CloudError("That is the Supabase dashboard address. You want the "
                          "Project URL from Settings → API, ending in .supabase.co")
@@ -210,8 +335,9 @@ def config_file() -> str:
 
 
 DEFAULTS: Dict[str, Any] = {
-    "url": "",
-    "key": "",
+    "site": "https://sectorloom.com",   # what the driver types
+    "url": "",                          # both of these are read from the
+    "key": "",                          # site's config.js, never typed
     "email": "",
     "refresh_token": "",
     "watch_iracing": True,
@@ -239,5 +365,7 @@ def load_config() -> Dict[str, Any]:
 def save_config(cfg: Dict[str, Any]) -> None:
     tmp = config_file() + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=1)
+    os.replace(tmp, config_file())
         json.dump(cfg, fh, indent=1)
     os.replace(tmp, config_file())
