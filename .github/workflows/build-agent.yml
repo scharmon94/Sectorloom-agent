@@ -63,6 +63,7 @@ jobs:
       - name: Check the agent still runs
         run: |
           python -c "import sectorloom_agent.app, sectorloom_agent.ibt, sectorloom_agent.gui"
+          python tests/test_discover.py
           python tests/test_end_to_end.py
 
       - name: Build SectorLoomAgent.exe
@@ -170,5 +171,4 @@ jobs:
             dist/SHA256SUMS.txt
           generate_release_notes: true
           fail_on_unmatched_files: true
-            dist/SHA256SUMS.txt
       
