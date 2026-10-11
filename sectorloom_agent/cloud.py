@@ -367,5 +367,3 @@ def save_config(cfg: Dict[str, Any]) -> None:
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=1)
     os.replace(tmp, config_file())
-        json.dump(cfg, fh, indent=1)
-    os.replace(tmp, config_file())

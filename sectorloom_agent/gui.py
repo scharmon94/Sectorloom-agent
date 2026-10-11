@@ -244,4 +244,3 @@ class AgentWindow:
             self.nb.select(self.tab_activity)
         except Exception:
             pass
-            pass
