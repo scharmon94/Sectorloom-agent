@@ -174,6 +174,59 @@ def main():
         check_true("rejected sign-in explained", "Invalid login credentials" in str(e))
     fake_supabase.STATE["reject_auth"] = False
 
+    print("\n10. the project is found from the site address alone")
+    # What a driver actually does: types the site, email and password.
+    # The Supabase URL and key are read out of the site's own config.js.
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    class Site(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/config.js":
+                self.send_response(404); self.end_headers(); return
+            body = ('window.SECTORLOOM_CONFIG={\n'
+                    '  /* SUPABASE_URL: "https://PASTE-YOURS.supabase.co" */\n'
+                    '  SUPABASE_URL: "%s",\n'
+                    '  SUPABASE_ANON_KEY: "sb_publishable_test",\n'
+                    '  PAY_LINK_MONTHLY: "https://buy.stripe.com/x",\n'
+                    '  SUPPORT_EMAIL: "help@example.com"\n};' % url).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+        def log_message(self, *a): pass
+
+    site_srv = HTTPServer(("127.0.0.1", 0), Site)
+    threading.Thread(target=site_srv.serve_forever, daemon=True).start()
+    site = f"http://127.0.0.1:{site_srv.server_port}"
+
+    fresh = os.path.join(work, "fresh.json")
+    os.environ["SECTORLOOM_AGENT_CONFIG"] = fresh
+    json.dump({"site": site, "email": fake_supabase.STATE["email"],
+               "watch_iracing": False, "watch_lmu": False}, open(fresh, "w"))
+    for mod in [m for m in list(sys.modules) if m.startswith("sectorloom_agent")]:
+        del sys.modules[mod]
+    from sectorloom_agent.app import Agent as Agent4
+    blank = Agent4()
+    check("starts with no project settings", bool(blank.cfg.get("url")), False)
+    blank.connect(password=fake_supabase.STATE["password"])
+    check_true("signed in knowing only the site", blank.cloud and blank.cloud.uid)
+    check("found the project url", json.load(open(fresh))["url"], url)
+    check("found the key", json.load(open(fresh))["key"], "sb_publishable_test")
+
+    # and a bad site address says so rather than blaming the password
+    json.dump({"site": "http://127.0.0.1:1", "email": "x@example.com"}, open(fresh, "w"))
+    for mod in [m for m in list(sys.modules) if m.startswith("sectorloom_agent")]:
+        del sys.modules[mod]
+    from sectorloom_agent.app import Agent as Agent5
+    from sectorloom_agent.cloud import CloudError as CE
+    try:
+        Agent5().connect(password="whatever")
+        check("unreachable site explained", "no error", "an error")
+    except CE as e:
+        check_true("unreachable site explained", "could not reach" in str(e).lower())
+    site_srv.shutdown()
+
     server.shutdown()
     shutil.rmtree(work, ignore_errors=True)
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
